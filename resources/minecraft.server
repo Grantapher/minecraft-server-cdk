@@ -1,0 +1,9 @@
+[Unit]
+Description=Minecraft Service
+After=default.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/minecraft
+ExecStart=/usr/bin/java -Xmx3G -Xms3G -jar /minecraft/forge-1.16.3-34.1.34.jar --nogui
