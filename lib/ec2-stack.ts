@@ -16,9 +16,13 @@ export interface MinecraftEc2StackProps extends cdk.StackProps {
   readonly serverPropsPath?: string
   /** The keypair to launch with. Without it, you won't be able to ssh to the host. */
   readonly keyName?: string
+  /** EIP to attach to the ec2 instance. */
+  readonly elasticIp?: ec2.CfnEIP
 }
 
 export class MinecraftEc2Stack extends cdk.Stack {
+  readonly ec2Instance: ec2.Instance
+
   constructor(scope: cdk.App, id: string, props: MinecraftEc2StackProps) {
     super(scope, id, props);
 
@@ -35,33 +39,51 @@ export class MinecraftEc2Stack extends cdk.Stack {
     securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(25565), 'minecraft clients tcp');
     securityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.udp(25565), 'minecraft clients udp');
 
-    const instance = new ec2.Instance(this, 'Ec2Instance', {
+    this.ec2Instance = new ec2.Instance(this, 'Ec2Instance', {
       vpc,
       securityGroup,
       instanceType: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM),
-      machineImage: ec2.MachineImage.genericLinux({'us-west-2': 'ami-0528a5175983e7f28'}),
+      machineImage: ec2.MachineImage.lookup({
+        name: 'amzn2-ami-hvm*',
+        owners: ['amazon'],
+      }),
       vpcSubnets: {subnetType: ec2.SubnetType.PUBLIC},
       keyName: props.keyName,
     })
 
-    props.bucket.grantReadWrite(instance).assertSuccess()
-    props.bucket.grantDelete(instance).assertSuccess()
+    props.bucket.grantReadWrite(this.ec2Instance).assertSuccess()
+    props.bucket.grantDelete(this.ec2Instance).assertSuccess()
 
-    const addDownload: (path: string, localFile: string) => void = 
-      (path, localFile) => {
-        const asset = new s3a.Asset(this, `Asset-${localFile}`, {path})
+    const addDownload = (path: string, localFile: string) => {
+      const asset = new s3a.Asset(this, `Asset-${localFile}`, {path})
 
-        asset.grantRead(instance)
+      asset.grantRead(this.ec2Instance)
 
-        instance.userData.addS3DownloadCommand({
-          bucket: asset.bucket, 
-          bucketKey: asset.s3ObjectKey,
-          localFile,
-        })
-      };
-    
-    instance.userData.addCommands(
+      this.ec2Instance.userData.addS3DownloadCommand({
+        bucket: asset.bucket, 
+        bucketKey: asset.s3ObjectKey,
+        localFile,
+      })
+    };
+
+    const envVars = {
+      AWS_BACKUP_BUCKET: props.bucket.bucketName,
+      FORGE_VERSION: props.forgeVersion,
+    }
+    const envVarCommands = Object.entries(envVars).map(([envVar, value]) => `export ${envVar}="${value}"`)
+    this.ec2Instance.userData.addCommands(...envVarCommands)
+    // so that cron can pick them up
+    this.ec2Instance.userData.addCommands(...envVarCommands.map(command => `sudo -u ec2-user echo '${command}' >> /home/ec2-user/.bash_profile`))
+  
+    const addCronScript = (cron: string, script: string) => 
+      this.ec2Instance.userData.addCommands(
+        `sudo -u ec2-user crontab -l | grep '${script}' || (sudo -u ec2-user crontab -l 2>/dev/null; echo "${cron} ${script} >> ${script}.log 2>&1") | sudo -u ec2-user crontab -`);
+
+    this.ec2Instance.userData.addCommands(
       'sudo yum install -y java-11-amazon-corretto',
+      'sudo mkdir /minecraft_config',
+      'sudo chown -R ec2-user:ec2-user /minecraft_config',
+      'mkdir /minecraft_config/bin',
       'sudo mkdir /minecraft',
       'sudo chown -R ec2-user:ec2-user /minecraft',
       'cd /minecraft',
@@ -74,27 +96,38 @@ export class MinecraftEc2Stack extends cdk.Stack {
     if (props.modsZipPath) {
       const modsZipLocalPath = 'mods.zip'
       addDownload(props.modsZipPath, modsZipLocalPath)
-      instance.userData.addCommands(`unzip ${modsZipLocalPath}`)
+      this.ec2Instance.userData.addCommands(
+        `unzip ${modsZipLocalPath}`,
+        `rm -f ${modsZipLocalPath}`,
+        )
     }
 
-    //todo this can probably be generated rather than having a copy of the file
     addDownload(props.minecraftServerPath, '/etc/systemd/system/minecraft.service')
+    addDownload('resources/backup.sh', '/minecraft_config/bin/backup.sh')
+    addDownload('resources/download_previous.sh', '/minecraft_config/bin/download_previous.sh')
+    addDownload('resources/setup.sh', '/minecraft_config/bin/setup.sh')
+    this.ec2Instance.userData.addCommands(
+      `sudo chown ec2-user:ec2-user -R /minecraft_config/bin`,
+      `sudo chmod 755 -R /minecraft_config/bin`,
+    )
+    addCronScript('*/15 * * * *', '/minecraft_config/bin/backup.sh')
+    this.ec2Instance.userData.addCommands('/minecraft_config/bin/setup.sh');
 
-    const forgeUrl = 
-      `https://files.minecraftforge.net/maven/net/minecraftforge/forge/${props.forgeVersion}/forge-${props.forgeVersion}-installer.jar`
+    let ip
+    if (props.elasticIp) {
+      ip = props.elasticIp.ref
+      new ec2.CfnEIPAssociation(this, 'ea', {
+        eip: ip,
+        instanceId: this.ec2Instance.instanceId
+      });
+    } else {
+      ip = this.ec2Instance.instancePublicIp
+    }
 
-    instance.userData.addCommands(
-      `curl -o forge-installer.jar ${forgeUrl}`,
-      'java -jar forge-installer.jar --installServer',
-      "echo 'eula=true' > eula.txt",
-      'sudo systemctl daemon-reload',
-      'sudo service minecraft start',
-    );
-
-    new cdk.CfnOutput(this, 'Server Address', {
-      exportName: 'ServerAddress',
-      description: 'The Server Address to use in minecraft',
-      value: `${instance.instancePublicIp}:25565`,
+    new cdk.CfnOutput(this, 'ServerIp', {
+      exportName: 'ServerIp',
+      description: 'IP Address used to login to the server.',
+      value: `${ip}:25565`,
     })
   }  
 }

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-import { S3DownloadOptions } from '@aws-cdk/aws-ec2';
 import * as cdk from '@aws-cdk/core';
-import * as s3a from '@aws-cdk/aws-s3-assets';
+import * as ec2 from '@aws-cdk/aws-ec2';
 import { MinecraftEc2Stack } from './ec2-stack';
 import { MinecraftS3Stack } from './s3-stack';
 
 const app = new cdk.App();
 
 const env: cdk.Environment = {
+    account: '418390728672',
     region: 'us-west-2',
 }
 
@@ -15,6 +15,14 @@ const s3Stack = new MinecraftS3Stack(app, 'MinecraftS3Stack', {
     env,
     bucketName: 'grantapher-minecraft-cdk',
 });
+
+const eipStack = new class extends cdk.Stack {
+    readonly eip: ec2.CfnEIP
+    constructor(scope: cdk.App, id: string, props: cdk.StackProps) {
+        super(scope, id, props)
+        this.eip = new ec2.CfnEIP(this, 'Server IP');
+    }
+}(app, 'ElasticIpStack', {env});
 
 new MinecraftEc2Stack(app, 'MinecraftEc2Stack', {
     env,
@@ -24,4 +32,5 @@ new MinecraftEc2Stack(app, 'MinecraftEc2Stack', {
     minecraftServerPath: 'resources/minecraft.server',
     modsZipPath: 'resources/mods.zip',
     serverPropsPath: 'resources/server.properties',
+    elasticIp: eipStack.eip,
 });

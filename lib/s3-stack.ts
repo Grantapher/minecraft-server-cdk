@@ -14,6 +14,10 @@ export class MinecraftS3Stack extends cdk.Stack {
 
     this.bucket = new s3.Bucket(this, 'Bucket', {
         bucketName: props?.bucketName,
+        lifecycleRules: [{
+          expiration: cdk.Duration.days(30),
+          prefix: 'backups',
+        }],
     })
   }
 }

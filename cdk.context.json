@@ -1,0 +1,9 @@
+{
+  "availability-zones:account=418390728672:region=us-west-2": [
+    "us-west-2a",
+    "us-west-2b",
+    "us-west-2c",
+    "us-west-2d"
+  ],
+  "ami:account=418390728672:filters.image-type.0=machine:filters.name.0=amzn2-ami-hvm*:filters.state.0=available:owners.0=amazon:region=us-west-2": "ami-0528a5175983e7f28"
+}
